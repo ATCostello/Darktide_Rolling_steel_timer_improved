@@ -299,4 +299,3 @@ HudElementMissionObjectiveFeed._update_widgets = function(self, dt, t)
 		end
 	end
 end
-
