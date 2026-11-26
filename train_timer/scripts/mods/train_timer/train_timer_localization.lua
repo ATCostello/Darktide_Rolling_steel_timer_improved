@@ -1,6 +1,5 @@
 local mod = get_mod("train_timer")
-mod.version = "1.3.05"
-mod:info("Rolling Steel Timer Improved (Train Timer) is installed, using version: " .. tostring(mod.version))
+local gradient_text = mod:io_dofile("train_timer/scripts/mods/train_timer/utils/gradient_text")
 
 local colours = {
 	title = "200,140,20",
@@ -8,48 +7,16 @@ local colours = {
 	text = "169,191,153",
 }
 
-local function lerp(a, b, t)
-	return a + (b - a) * t
-end
+local title_colour = colours.title
 
-local function utf8_chars(s)
-	local chars = {}
-	for char in string.gmatch(s, "[%z\1-\127\194-\244][\128-\191]*") do
-		table.insert(chars, char)
-	end
-	return chars
-end
-
-mod.gradientText = function(text, startColor, endColor, colorSpaces)
-	local result = ""
-	local chars = utf8_chars(text)
-	local visibleIndex = 0
-
-	for _, char in ipairs(chars) do
-		if colorSpaces or char ~= " " then
-			visibleIndex = visibleIndex + 1
-		end
+mod.gradientText = function(text, start_colour, end_colour, colour_spaces)
+	if type(gradient_text) ~= "function" then
+		return text
 	end
 
-	local currentIndex = 0
+	local gradient = gradient_text(text, start_colour, end_colour, colour_spaces) or ""
 
-	for _, char in ipairs(chars) do
-		if not colorSpaces and char == " " then
-			result = result .. char
-		else
-			currentIndex = currentIndex + 1
-			local t = (visibleIndex <= 1) and 0 or (currentIndex - 1) / (visibleIndex - 1)
-
-			local r = math.floor(lerp(startColor[1], endColor[1], t))
-			local g = math.floor(lerp(startColor[2], endColor[2], t))
-			local b = math.floor(lerp(startColor[3], endColor[3], t))
-
-			result = result .. string.format("{#color(%d,%d,%d)}%s", r, g, b, char)
-		end
-	end
-
-	result = "{#color(" .. colours.title .. ")}" .. result .. "{#reset()}"
-	return result
+	return "{#color(" .. title_colour .. ")} " .. gradient .. "{#reset()}"
 end
 
 local mod_name = {
@@ -93,11 +60,6 @@ mod.localisation = {
 			.. colours.text
 			.. ")}Alfthebigheaded\n"
 			.. "{#color("
-			.. colours.subtitle
-			.. ")}Version: {#color("
-			.. colours.text
-			.. ")}"
-			.. mod.version
 			.. "{#reset()}",
 		ru = "Train timer - Добавляет числовой таймер на миссии *поезда* «Стальной экспресс» наряду с обычной шкалой прогресса.",
 		["zh-cn"] = "为「钢铁列车」任务中的列车行动添加数字计时器，与普通进度条并排显示。",
@@ -136,16 +98,18 @@ mod.localisation = {
 }
 
 mod.toggle_pizazz = function()
-	for key, values in pairs(mod.localisation) do
-		if key == "mod_name" then
-			for language, text in pairs(values) do
-				if mod:get("mod_name_pizazz_toggle") then
-					mod.localisation[key][language] = mod.localisation["mod_name_pizazz"][language]
-				else
-					mod.localisation[key][language] = mod.localisation["mod_name_boring"][language]
-				end
-			end
-		end
+	local source = mod.localisation.mod_name_boring
+
+	if mod:get("mod_name_pizazz_toggle") ~= false then
+		source = mod.localisation.mod_name_pizazz
+	end
+
+	if type(source) ~= "table" then
+		return
+	end
+
+	for language, name in pairs(source) do
+		mod.localisation.mod_name[language] = name
 	end
 end
 
