@@ -1,19 +1,12 @@
 local mod = get_mod("train_timer")
 
-local UIManager = require("scripts/managers/ui/ui_manager")
-local UIHud = require("scripts/managers/ui/ui_hud")
-local HudElementObjectiveProgressBar =
-	require("scripts/ui/hud/elements/objective_progress_bar/hud_element_objective_progress_bar")
 local HudElementMissionObjectiveFeed =
 	require("scripts/ui/hud/elements/mission_objective_feed/hud_element_mission_objective_feed")
 local HudElementMissionObjectiveFeedSettings =
 	require("scripts/ui/hud/elements/mission_objective_feed/hud_element_mission_objective_feed_settings")
-local HudElementMissionObjectiveFeedDefinitions =
-	require("scripts/ui/hud/elements/mission_objective_feed/hud_element_mission_objective_feed_definitions")
 local UISettings = require("scripts/settings/ui/ui_settings")
 local UIWidget = require("scripts/managers/ui/ui_widget")
 local UIFontSettings = require("scripts/managers/ui/ui_font_settings")
-local DialogueEventQueue = require("scripts/extension_systems/dialogue/dialogue_event_queue")
 
 local add_definitions = function(definitions)
 	if not definitions then
@@ -138,27 +131,18 @@ local ALERT_COLOR = {
 
 -- Custom fuzzy match has_widget check.
 HudElementMissionObjectiveFeed.has_objective = function(self, objectivename)
-	for _, hud_objective in pairs(self._hud_objectives_sorted) do
-		local objective_name = hud_objective._objective_name
+	local objectives = self._hud_objectives_sorted or {}
 
-		if string.find(objective_name, objectivename, 1, true) then
+	for i = 1, #objectives do
+		local hud_objective = objectives[i]
+		local objective_name = hud_objective and hud_objective._objective_name
+
+		if objective_name and string.find(objective_name, objectivename, 1, true) then
 			return true
 		end
 	end
 
 	return false
-end
-
-local find_widget = function(self, widget_name)
-	for _, widget in pairs(self._widgets_by_name) do
-		if widget then
-			local name = widget.name
-
-			if string.find(name, widget_name, 1, true) then
-				return widget
-			end
-		end
-	end
 end
 
 mod:hook_safe(
@@ -197,29 +181,13 @@ local function fuzzy_match(objective_name, match_name)
 end
 
 HudElementMissionObjectiveFeed._update_widgets = function(self, dt, t)
-	if
-
-		self:has_objective("objective_flash_train_reach_locomotive")
-		or self:has_objective("objective_flash_train_alert")
-	then
-		local widget = self._widgets_by_name["timer_text"]
-		widget.content.visible = true
-
-		local widget = self._widgets_by_name["timer_background"]
-		widget.content.visible = true
-	else
-		local widget = self._widgets_by_name["timer_text"]
-		widget.content.visible = false
-
-		local widget = self._widgets_by_name["timer_background"]
-		widget.content.visible = false
-	end
-
 	local objective_widgets = self._objective_widgets
+	local objectives = self._hud_objectives_sorted or {}
 
-	for _, hud_objective in pairs(self._hud_objectives_sorted) do
-		objective_name = hud_objective._objective_name
-		local widget = find_widget(self, objective_name)
+	for i = 1, #objectives do
+		local hud_objective = objectives[i]
+		local objective = hud_objective and hud_objective.objective and hud_objective:objective()
+		local widget = objective and objective_widgets and objective_widgets[objective]
 
 		if widget then
 			local content = widget.content
@@ -257,15 +225,32 @@ HudElementMissionObjectiveFeed._update_widgets = function(self, dt, t)
 				minutes_time_to_string = addLeadingZeros(minutes_time_to_string)
 				seconds_time_to_string = addLeadingZeros(seconds_time_to_string)
 
-				local minutes_time_string_to_array = {}
-				local seconds_time_string_to_array = {}
+				local symbols = self._alfs_timer_symbols
 
-				for mem in string.gmatch(minutes_time_to_string, "%w") do
-					table.insert(minutes_time_string_to_array, mem)
+				if not symbols then
+					symbols = {}
+					self._alfs_timer_symbols = symbols
 				end
 
-				for mem in string.gmatch(seconds_time_to_string, "%w") do
-					table.insert(seconds_time_string_to_array, mem)
+				local symbol_count = 0
+
+				for i = 1, #minutes_time_to_string do
+					symbol_count = symbol_count + 1
+					local number = tonumber(string.sub(minutes_time_to_string, i, i))
+					symbols[symbol_count] = UISettings.digital_clock_numbers[number]
+				end
+
+				symbol_count = symbol_count + 1
+				symbols[symbol_count] = ":"
+
+				for i = 1, #seconds_time_to_string do
+					symbol_count = symbol_count + 1
+					local number = tonumber(string.sub(seconds_time_to_string, i, i))
+					symbols[symbol_count] = UISettings.digital_clock_numbers[number]
+				end
+
+				for i = symbol_count + 1, #symbols do
+					symbols[i] = nil
 				end
 
 				-- Add alert flashing to new timer
@@ -282,27 +267,11 @@ HudElementMissionObjectiveFeed._update_widgets = function(self, dt, t)
 					style.text.text_color = ALERT_COLOR
 				end
 
-				local symbols_text = ""
+				local symbols_text = table.concat(symbols, "", 1, symbol_count)
 
-				-- Add minutes symbols
-				for i = 1, #minutes_time_string_to_array do
-					local number = tonumber(minutes_time_string_to_array[i])
-					local symbol = UISettings.digital_clock_numbers[number]
-
-					symbols_text = symbols_text .. symbol
+				if timerwidget.content.text ~= symbols_text then
+					timerwidget.content.text = symbols_text
 				end
-
-				symbols_text = symbols_text .. ":"
-
-				-- Add seconds symbols
-				for i = 1, #seconds_time_string_to_array do
-					local number = tonumber(seconds_time_string_to_array[i])
-					local symbol = UISettings.digital_clock_numbers[number]
-
-					symbols_text = symbols_text .. symbol
-				end
-
-				timerwidget.content.text = symbols_text
 			end
 
 			if ui_state == "alert" then
@@ -331,87 +300,3 @@ HudElementMissionObjectiveFeed._update_widgets = function(self, dt, t)
 	end
 end
 
--- helper to compute text width safely across different game versions
-local function get_text_width_safe(ui_renderer, text, text_style, optional_size)
-	-- Try UIWidget.get_text_dimensions
-	if UIWidget and UIWidget.get_text_dimensions and ui_renderer then
-		local text_width = UIWidget.get_text_dimensions(ui_renderer, text, text_style, optional_size)
-		-- Some builds return multiple values: width, height, caret
-		if type(text_width) == "number" then
-			return text_width
-		else
-			local w = select(1, UIWidget.get_text_dimensions(ui_renderer, text, text_style, optional_size))
-			if type(w) == "number" then
-				return w
-			end
-		end
-	end
-
-	-- Try UIRenderer.text_size
-	if rawget(_G, "UIRenderer") and UIRenderer.text_size and ui_renderer then
-		local font_type = text_style.font_type
-		local font_size = text_style.font_size
-		local material = text_style.material
-		local w = select(1, UIRenderer.text_size(ui_renderer, text, font_type, font_size, material, optional_size))
-		if type(w) == "number" then
-			return w
-		end
-	end
-
-	-- Fallback to zero to avoid crashes; alignment will be default
-	return 0
-end
-
---[[HudElementMissionObjectiveFeed._update_timer_progress = function(self, hud_objective, widget, dt, realign)
-	local content = widget.content
-	local show_minutes = content.show_minutes
-	local show_hours = content.show_hours
-	local time_left = math.max(hud_objective:time_left(dt), 0)
-	local text
-
-	if show_hours then
-		local use_short = true
-		local allow_skip = false
-		local max_detail
-
-		text = TextUtilities.format_time_span_localized(time_left, use_short, allow_skip, max_detail)
-	elseif show_minutes then
-		local millis = math.floor(time_left % 1 * 100)
-
-		text = string.format("%.2d:%.2d:%.2d", time_left / 60 % 60, time_left % 60, millis)
-	else
-		local millis = math.floor(time_left % 1 * 100)
-
-		text = string.format("%.2d:%.2d", time_left % 60, millis)
-	end
-
-	if realign then
-		local realignment_text
-
-		if show_hours then
-			realignment_text = text
-		else
-			realignment_text = show_minutes and "00:00:00" or "00:00"
-		end
-
-		local style = widget.style
-		local text_style = style.timer_text
-		local optional_size = {
-			500,
-			40,
-		}
-		local ui_renderer = self._parent and self._parent.ui_renderer and self._parent:ui_renderer() or nil
-
-		-- Safe text width measurement; do not call nonexistent _text_size_for_style
-		local width = get_text_width_safe(ui_renderer, realignment_text, text_style, optional_size)
-
-		-- Guard default_offset access
-		local base_x = (text_style.default_offset and text_style.default_offset[1])
-			or (text_style.offset and text_style.offset[1])
-			or 0
-		text_style.offset = text_style.offset or { 0, 0, 0 }
-		text_style.offset[1] = base_x - (width or 0)
-	end
-
-	content.timer_text = text
-end]]
