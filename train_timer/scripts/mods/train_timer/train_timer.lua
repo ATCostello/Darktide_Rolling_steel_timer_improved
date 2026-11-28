@@ -8,6 +8,23 @@ local UISettings = require("scripts/settings/ui/ui_settings")
 local UIWidget = require("scripts/managers/ui/ui_widget")
 local UIFontSettings = require("scripts/managers/ui/ui_font_settings")
 
+local DIGITAL_CLOCK_NUMBERS = UISettings and UISettings.digital_clock_numbers
+local PADDED_NUMBERS = {}
+
+for i = 0, 99 do
+	PADDED_NUMBERS[i] = string.format("%02d", i)
+end
+
+local math_floor = math.floor
+local math_lerp = math.lerp
+local math_max = math.max
+local math_sin = math.sin
+local string_find = string.find
+local string_sub = string.sub
+local table_concat = table.concat
+local tonumber = tonumber
+local tostring = tostring
+
 local add_definitions = function(definitions)
 	if not definitions then
 		return
@@ -107,19 +124,14 @@ mod:hook_require(
 	end
 )
 
-local function addLeadingZeros(str)
-	-- Check if the string length is already greater than or equal to 2
-	if #str >= 2 then
-		return str
+local function padded_number(value)
+	if type(value) ~= "number" then
+		return "00"
 	end
 
-	-- Calculate the number of leading zeros to add
-	local numZeros = 2 - #str
+	local integer = math_floor(value)
 
-	-- Create a new string with the leading zeros
-	local result = string.rep("0", numZeros) .. str
-
-	return result
+	return PADDED_NUMBERS[integer] or tostring(integer)
 end
 
 local ALERT_COLOR = {
@@ -129,15 +141,22 @@ local ALERT_COLOR = {
 	0,
 }
 
--- Custom fuzzy match has_widget check.
 HudElementMissionObjectiveFeed.has_objective = function(self, objectivename)
-	local objectives = self._hud_objectives_sorted or {}
+	if type(objectivename) ~= "string" then
+		return false
+	end
+
+	local objectives = self._hud_objectives_sorted
+
+	if not objectives then
+		return false
+	end
 
 	for i = 1, #objectives do
 		local hud_objective = objectives[i]
 		local objective_name = hud_objective and hud_objective._objective_name
 
-		if objective_name and string.find(objective_name, objectivename, 1, true) then
+		if type(objective_name) == "string" and string_find(objective_name, objectivename, 1, true) then
 			return true
 		end
 	end
@@ -145,156 +164,167 @@ HudElementMissionObjectiveFeed.has_objective = function(self, objectivename)
 	return false
 end
 
-mod:hook_safe(
-	CLASS.HudElementMissionObjectiveFeed,
-	"update",
-	function(self, dt, t, ui_renderer, render_settings, input_service)
-		if
-			self:has_objective("objective_flash_train_reach_locomotive")
-			or self:has_objective("objective_flash_train_alert")
-		then
-			local widget = self._widgets_by_name["timer_text"]
-			widget.content.visible = true
+mod:hook_safe(CLASS.HudElementMissionObjectiveFeed, "update", function(self)
+	local show_timer = self:has_objective("objective_flash_train_reach_locomotive")
+		or self:has_objective("objective_flash_train_alert")
+	local widgets_by_name = self._widgets_by_name
+	local timer_text = widgets_by_name and widgets_by_name.timer_text
+	local timer_background = widgets_by_name and widgets_by_name.timer_background
 
-			local widget = self._widgets_by_name["timer_background"]
-			widget.content.visible = true
-		else
-			local widget = self._widgets_by_name["timer_text"]
-			widget.content.visible = false
-
-			local widget = self._widgets_by_name["timer_background"]
-			widget.content.visible = false
-		end
-
-		-- for debugging
-		--Managers.time:set_local_scale("gameplay", 20)
+	if timer_text and timer_text.content then
+		timer_text.content.visible = show_timer
 	end
-)
 
--- Check if the objective names match using a fuzzy approach (ignore prefixes or numbers)
+	if timer_background and timer_background.content then
+		timer_background.content.visible = show_timer
+	end
+end)
+
 local function fuzzy_match(objective_name, match_name)
-	-- Strip out leading numbers or underscores
-	local clean_objective_name = objective_name:match("^[^%w]*(%w+.*)$") -- remove leading non-alphanumeric chars
-	local clean_match_name = match_name:match("^[^%w]*(%w+.*)$") -- same for match name
+	if type(objective_name) ~= "string" or type(match_name) ~= "string" then
+		return false
+	end
 
-	return clean_objective_name == clean_match_name
+	local clean_objective_name = objective_name:match("^[^%w]*(%w+.*)$")
+	local clean_match_name = match_name:match("^[^%w]*(%w+.*)$")
+
+	return clean_objective_name ~= nil and clean_objective_name == clean_match_name
 end
 
 HudElementMissionObjectiveFeed._update_widgets = function(self, dt, t)
 	local objective_widgets = self._objective_widgets
-	local objectives = self._hud_objectives_sorted or {}
+	local objectives = self._hud_objectives_sorted
+
+	if not objectives then
+		return
+	end
+
+	local settings = HudElementMissionObjectiveFeedSettings
+	local categories = settings and settings.colors_by_category
+	local default_category = categories and categories.default
+	local alert_color = settings and settings.alert_color
+	local widgets_by_name = self._widgets_by_name
 
 	for i = 1, #objectives do
 		local hud_objective = objectives[i]
-		local objective = hud_objective and hud_objective.objective and hud_objective:objective()
-		local widget = objective and objective_widgets and objective_widgets[objective]
 
-		if widget then
-			local content = widget.content
-			local ui_state = hud_objective:state()
-			local objective_name = hud_objective._objective_name
-			content.ui_state = ui_state
+		if hud_objective and hud_objective.state then
+			local objective = hud_objective.objective and hud_objective:objective()
+			local widget = objective and objective_widgets and objective_widgets[objective]
 
-			-- If train mission with timer then add clock
-			if
-				fuzzy_match(objective_name, "objective_flash_train_reach_locomotive")
-				or fuzzy_match(objective_name, "objective_flash_train_alert")
-			then
-				-- update clock timer
-				local timerwidget = self._widgets_by_name.timer_text
-				local maxtime = hud_objective._max_counter_amount
-				local time_left = 0
-				if fuzzy_match(objective_name, "objective_flash_train_reach_locomotive") then
-					local completed_seconds = hud_objective._progression * maxtime
-					maxtime = maxtime + 30
-					completed_seconds = completed_seconds
-					time_left = maxtime - completed_seconds
-				elseif fuzzy_match(objective_name, "objective_flash_train_alert") then
-					if hud_objective._time_left then
-						time_left = hud_objective._time_left
+			if widget and widget.content then
+				local content = widget.content
+				local ui_state = hud_objective:state()
+				local objective_name = hud_objective._objective_name
+
+				content.ui_state = ui_state
+
+				if
+					fuzzy_match(objective_name, "objective_flash_train_reach_locomotive")
+					or fuzzy_match(objective_name, "objective_flash_train_alert")
+				then
+					local timerwidget = widgets_by_name and widgets_by_name.timer_text
+
+					if timerwidget and timerwidget.content and timerwidget.style then
+						local maxtime = hud_objective._max_counter_amount
+						local progression = hud_objective._progression
+						local time_left = 0
+
+						if type(maxtime) == "number" and type(progression) == "number" then
+							if fuzzy_match(objective_name, "objective_flash_train_reach_locomotive") then
+								time_left = maxtime + 30 - progression * maxtime
+							else
+								local alert_time_left = hud_objective._time_left
+
+								if type(alert_time_left) == "number" then
+									time_left = alert_time_left
+								end
+							end
+						end
+
+						time_left = math_max(time_left, 0)
+
+						local seconds = time_left % 60
+						local minutes = math_floor(time_left / 60)
+						local minutes_time_to_string = padded_number(minutes)
+						local seconds_time_to_string = padded_number(seconds)
+						local symbols = self._alfs_timer_symbols
+						local symbol_count = 0
+
+						if not symbols then
+							symbols = {}
+							self._alfs_timer_symbols = symbols
+						end
+
+						for j = 1, #minutes_time_to_string do
+							symbol_count = symbol_count + 1
+							local number = tonumber(string_sub(minutes_time_to_string, j, j))
+							symbols[symbol_count] = (DIGITAL_CLOCK_NUMBERS and DIGITAL_CLOCK_NUMBERS[number]) or ""
+						end
+
+						symbol_count = symbol_count + 1
+						symbols[symbol_count] = ":"
+
+						for j = 1, #seconds_time_to_string do
+							symbol_count = symbol_count + 1
+							local number = tonumber(string_sub(seconds_time_to_string, j, j))
+							symbols[symbol_count] = (DIGITAL_CLOCK_NUMBERS and DIGITAL_CLOCK_NUMBERS[number]) or ""
+						end
+
+						for j = symbol_count + 1, #symbols do
+							symbols[j] = nil
+						end
+
+						if ui_state == "alert" then
+							local text_style = timerwidget.style.text
+							local neutral_color = default_category and default_category.bar
+
+							if text_style and neutral_color and alert_color then
+								local lerp = math_sin(t * 10) / 2 + 0.5
+
+								ALERT_COLOR[2] = math_lerp(neutral_color[2], alert_color[2], lerp)
+								ALERT_COLOR[3] = math_lerp(neutral_color[3], alert_color[3], lerp)
+								ALERT_COLOR[4] = math_lerp(neutral_color[4], alert_color[4], lerp)
+
+								text_style.text_color = ALERT_COLOR
+							end
+						end
+
+						local symbols_text = table_concat(symbols, "", 1, symbol_count)
+
+						if timerwidget.content.text ~= symbols_text then
+							timerwidget.content.text = symbols_text
+						end
 					end
 				end
 
-				local seconds = time_left % 60
-				local minutes = math.floor(time_left / 60)
-
-				local minutes_time_to_string = tostring(math.ceil(minutes))
-				local seconds_time_to_string = tostring(math.floor(seconds))
-
-				-- pad zeroes
-				minutes_time_to_string = addLeadingZeros(minutes_time_to_string)
-				seconds_time_to_string = addLeadingZeros(seconds_time_to_string)
-
-				local symbols = self._alfs_timer_symbols
-
-				if not symbols then
-					symbols = {}
-					self._alfs_timer_symbols = symbols
-				end
-
-				local symbol_count = 0
-
-				for i = 1, #minutes_time_to_string do
-					symbol_count = symbol_count + 1
-					local number = tonumber(string.sub(minutes_time_to_string, i, i))
-					symbols[symbol_count] = UISettings.digital_clock_numbers[number]
-				end
-
-				symbol_count = symbol_count + 1
-				symbols[symbol_count] = ":"
-
-				for i = 1, #seconds_time_to_string do
-					symbol_count = symbol_count + 1
-					local number = tonumber(string.sub(seconds_time_to_string, i, i))
-					symbols[symbol_count] = UISettings.digital_clock_numbers[number]
-				end
-
-				for i = symbol_count + 1, #symbols do
-					symbols[i] = nil
-				end
-
-				-- Add alert flashing to new timer
 				if ui_state == "alert" then
-					local neutral_color = HudElementMissionObjectiveFeedSettings.colors_by_category.default.bar
-					local lerp = math.sin(t * 10) / 2 + 0.5
+					local style = widget.style
+					local bar_style = style and style.bar
+					local timer_style = style and style.timer_text
+					local neutral_color = default_category and default_category.bar
+					local objective_alert_color = (bar_style and bar_style.alert_color) or alert_color
 
-					ALERT_COLOR[2] = math.lerp(neutral_color[2], 255, lerp)
-					ALERT_COLOR[3] = math.lerp(neutral_color[3], 151, lerp)
-					ALERT_COLOR[4] = math.lerp(neutral_color[4], 29, lerp)
+					if neutral_color and objective_alert_color then
+						local lerp = math_sin(t * 10) / 2 + 0.5
 
-					local style = timerwidget.style
+						ALERT_COLOR[2] = math_lerp(neutral_color[2], objective_alert_color[2], lerp)
+						ALERT_COLOR[3] = math_lerp(neutral_color[3], objective_alert_color[3], lerp)
+						ALERT_COLOR[4] = math_lerp(neutral_color[4], objective_alert_color[4], lerp)
 
-					style.text.text_color = ALERT_COLOR
-				end
+						if content.show_bar and bar_style then
+							bar_style.color = ALERT_COLOR
+						end
 
-				local symbols_text = table.concat(symbols, "", 1, symbol_count)
-
-				if timerwidget.content.text ~= symbols_text then
-					timerwidget.content.text = symbols_text
-				end
-			end
-
-			if ui_state == "alert" then
-				local style = widget.style
-				local neutral_color = HudElementMissionObjectiveFeedSettings.colors_by_category.default.bar
-				local alert_color = style.bar.alert_color or HudElementMissionObjectiveFeedSettings.alert_color
-				local lerp = math.sin(t * 10) / 2 + 0.5
-
-				ALERT_COLOR[2] = math.lerp(neutral_color[2], alert_color[2], lerp)
-				ALERT_COLOR[3] = math.lerp(neutral_color[3], alert_color[3], lerp)
-				ALERT_COLOR[4] = math.lerp(neutral_color[4], alert_color[4], lerp)
-
-				if content.show_bar then
-					style.bar.color = ALERT_COLOR
+						if content.show_timer and timer_style then
+							timer_style.text_color = ALERT_COLOR
+						end
+					end
 				end
 
 				if content.show_timer then
-					style.timer_text.text_color = ALERT_COLOR
+					self:_update_timer_progress(hud_objective, widget, dt)
 				end
-			end
-
-			if content.show_timer then
-				self:_update_timer_progress(hud_objective, widget, dt)
 			end
 		end
 	end
